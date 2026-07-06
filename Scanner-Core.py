@@ -14,7 +14,11 @@ from concurrent.futures import ThreadPoolExecutor
 from scapy.all import ARP, Ether, IP, TCP, DNS, DNSQR, srp, sr1
 
 OUI_DATABASE = {}
-DB_PATH = "netscan.db"
+# Anchored to this script's own directory rather than the current working
+# directory - otherwise running the scanner from a different cwd (e.g. a
+# cron job, or a future FastAPI app launched from a project root) would
+# silently create/read a second, disconnected netscan.db elsewhere.
+DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "netscan.db")
 
 # ----------------------------------------------------------------------
 # Passive TCP/IP stack fingerprint table (fallback signal only — see
@@ -548,6 +552,11 @@ def scan_arp_network(target_ip_range):
 def get_db_connection():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
+    # WAL mode lets readers (e.g. a future FastAPI process) query the DB
+    # concurrently with a write, instead of blocking on SQLite's default
+    # whole-file lock. Safe to set on every connection - it's a no-op
+    # once already enabled for the file.
+    conn.execute("PRAGMA journal_mode=WAL")
     return conn
 
 
