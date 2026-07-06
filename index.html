@@ -1,0 +1,579 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Home Network Console</title>
+<style>
+  :root {
+    --bg: #0B1220;
+    --panel: #121B2E;
+    --panel-raised: #16223A;
+    --hairline: #223049;
+    --text: #E7EDF7;
+    --muted: #8A97AC;
+    --teal: #34D8B0;
+    --amber: #F5A623;
+    --red: #FF5470;
+    --indigo: #6C8CFF;
+    --mono: ui-monospace, "SF Mono", "Cascadia Code", "JetBrains Mono", Consolas, monospace;
+    --sans: ui-sans-serif, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .shell {
+    max-width: 1180px;
+    margin: 0 auto;
+    padding: 28px 24px 64px;
+  }
+
+  /* ---------- Header ---------- */
+  header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    flex-wrap: wrap;
+    gap: 16px;
+    margin-bottom: 28px;
+  }
+
+  .title-block h1 {
+    font-size: 22px;
+    letter-spacing: 0.02em;
+    margin: 0 0 4px;
+    font-weight: 700;
+  }
+  .title-block .sig {
+    color: var(--indigo);
+    font-family: var(--mono);
+  }
+  .title-block p {
+    margin: 0;
+    color: var(--muted);
+    font-size: 13px;
+    font-family: var(--mono);
+  }
+
+  .stat-chips {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+  .chip {
+    background: var(--panel);
+    border: 1px solid var(--hairline);
+    border-radius: 8px;
+    padding: 8px 14px;
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--muted);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    white-space: nowrap;
+  }
+  .chip b { color: var(--text); font-size: 14px; }
+  .chip.warn b { color: var(--amber); }
+  .chip.danger b { color: var(--red); }
+  .chip.good b { color: var(--teal); }
+
+  /* ---------- Error banner ---------- */
+  .error-banner {
+    display: none;
+    background: rgba(255, 84, 112, 0.1);
+    border: 1px solid var(--red);
+    color: var(--text);
+    border-radius: 8px;
+    padding: 14px 16px;
+    margin-bottom: 20px;
+    font-family: var(--mono);
+    font-size: 13px;
+    line-height: 1.6;
+  }
+  .error-banner code {
+    background: rgba(255,255,255,0.08);
+    padding: 1px 6px;
+    border-radius: 4px;
+  }
+
+  /* ---------- Topology panel ---------- */
+  .topo-panel {
+    background: var(--panel);
+    border: 1px solid var(--hairline);
+    border-radius: 12px;
+    padding: 20px;
+    margin-bottom: 24px;
+  }
+  .topo-panel h2 {
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--muted);
+    margin: 0 0 12px;
+    font-weight: 600;
+  }
+  #topology-svg { width: 100%; height: auto; display: block; }
+  .node-label {
+    font-family: var(--mono);
+    font-size: 10px;
+    fill: var(--muted);
+  }
+  .node-circle { cursor: pointer; transition: r 0.15s ease; }
+  .node-circle:hover { r: 9; }
+  .hub-circle { fill: var(--indigo); }
+  .hub-label { fill: var(--text); font-family: var(--sans); font-weight: 700; font-size: 12px; }
+
+  /* ---------- Filter bar ---------- */
+  .filter-bar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 12px;
+    margin-bottom: 14px;
+  }
+  .segmented {
+    display: flex;
+    background: var(--panel);
+    border: 1px solid var(--hairline);
+    border-radius: 8px;
+    padding: 3px;
+    gap: 2px;
+  }
+  .segmented button {
+    background: transparent;
+    border: none;
+    color: var(--muted);
+    font-family: var(--sans);
+    font-size: 13px;
+    padding: 7px 14px;
+    border-radius: 6px;
+    cursor: pointer;
+  }
+  .segmented button.active {
+    background: var(--panel-raised);
+    color: var(--text);
+  }
+  .segmented button:focus-visible, .icon-btn:focus-visible, .approve-btn:focus-visible {
+    outline: 2px solid var(--indigo);
+    outline-offset: 2px;
+  }
+
+  .icon-btn {
+    background: var(--panel);
+    border: 1px solid var(--hairline);
+    color: var(--muted);
+    font-family: var(--sans);
+    font-size: 13px;
+    padding: 8px 14px;
+    border-radius: 8px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .icon-btn:hover { color: var(--text); border-color: var(--indigo); }
+
+  /* ---------- Table ---------- */
+  .table-wrap {
+    background: var(--panel);
+    border: 1px solid var(--hairline);
+    border-radius: 12px;
+    overflow: hidden;
+  }
+  table { width: 100%; border-collapse: collapse; }
+  thead th {
+    text-align: left;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--muted);
+    font-weight: 600;
+    padding: 12px 14px;
+    border-bottom: 1px solid var(--hairline);
+  }
+  tbody tr {
+    border-bottom: 1px solid var(--hairline);
+    cursor: pointer;
+  }
+  tbody tr:last-child { border-bottom: none; }
+  tbody tr:hover { background: rgba(255,255,255,0.02); }
+  tbody tr.flash { background: rgba(108,140,255,0.12); }
+  td { padding: 12px 14px; font-size: 13px; vertical-align: middle; }
+  td.mono { font-family: var(--mono); color: var(--text); }
+  td .hostname { color: var(--text); }
+  td .vendor { color: var(--muted); font-size: 12px; display: block; margin-top: 2px; }
+
+  .dot {
+    display: inline-block;
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    margin-right: 6px;
+  }
+  .dot.online { background: var(--teal); }
+  .dot.offline { background: var(--muted); }
+  .dot.conf-high { background: var(--teal); }
+  .dot.conf-medium { background: var(--amber); }
+  .dot.conf-low { background: var(--muted); }
+
+  .pill {
+    display: inline-block;
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: 0.03em;
+    padding: 3px 8px;
+    border-radius: 999px;
+    margin-right: 6px;
+    white-space: nowrap;
+  }
+  .pill.not-approved { background: rgba(255,84,112,0.15); color: var(--red); border: 1px solid var(--red); }
+  .pill.unknown-vendor { background: rgba(245,166,35,0.12); color: var(--amber); border: 1px solid var(--amber); }
+  .pill.new { background: rgba(108,140,255,0.15); color: var(--indigo); border: 1px solid var(--indigo); }
+
+  .approve-btn {
+    font-family: var(--sans);
+    font-size: 12px;
+    padding: 6px 12px;
+    border-radius: 6px;
+    border: 1px solid var(--hairline);
+    background: var(--panel-raised);
+    color: var(--text);
+    cursor: pointer;
+  }
+  .approve-btn.approved { border-color: var(--teal); color: var(--teal); }
+  .approve-btn.pending { border-color: var(--red); color: var(--red); }
+  .approve-btn:hover { opacity: 0.85; }
+
+  /* ---------- Detail row ---------- */
+  .detail-row td {
+    background: var(--panel-raised);
+    padding: 14px 20px;
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--muted);
+    line-height: 1.9;
+  }
+  .detail-row b { color: var(--text); }
+  .detail-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 4px 24px;
+  }
+
+  .empty-state {
+    text-align: center;
+    padding: 48px 20px;
+    color: var(--muted);
+    font-family: var(--mono);
+    font-size: 13px;
+  }
+
+  footer {
+    text-align: center;
+    color: var(--muted);
+    font-family: var(--mono);
+    font-size: 11px;
+    margin-top: 24px;
+  }
+
+  @media (max-width: 640px) {
+    thead { display: none; }
+    tbody tr { display: block; padding: 10px 0; }
+    td { display: block; padding: 4px 14px; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { transition: none !important; }
+  }
+</style>
+</head>
+<body>
+<div class="shell">
+
+  <header>
+    <div class="title-block">
+      <h1><span class="sig">⌁</span> Home Network Console</h1>
+      <p id="subtitle">Connecting to scanner API…</p>
+    </div>
+    <div class="stat-chips" id="stat-chips"></div>
+  </header>
+
+  <div class="error-banner" id="error-banner"></div>
+
+  <div class="topo-panel">
+    <h2>Network Map</h2>
+    <svg id="topology-svg" viewBox="0 0 800 260"></svg>
+  </div>
+
+  <div class="filter-bar">
+    <div class="segmented" id="filter-segmented">
+      <button data-filter="all" class="active">All</button>
+      <button data-filter="pending">Pending Approval</button>
+      <button data-filter="unknown">Unknown Vendor</button>
+      <button data-filter="online">Online</button>
+    </div>
+    <button class="icon-btn" id="refresh-btn">⟳ Refresh</button>
+  </div>
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>IP Address</th>
+          <th>Hostname / Vendor</th>
+          <th>Device Type</th>
+          <th>Confidence</th>
+          <th>Status</th>
+          <th>Flags</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody id="device-tbody"></tbody>
+    </table>
+    <div class="empty-state" id="empty-state" style="display:none;">No devices match this filter.</div>
+  </div>
+
+  <footer id="footer-note">Home Network Console — data from your own local scanner, never leaves this machine.</footer>
+
+</div>
+
+<script>
+  // Point this at wherever api.py (uvicorn) is running.
+  const API_BASE = "http://localhost:8000";
+  const ONLINE_REFRESH_MS = 15000;
+
+  let allDevices = [];
+  let currentFilter = "all";
+  let expandedMac = null;
+
+  const el = (id) => document.getElementById(id);
+
+  async function fetchJSON(path, options) {
+    const res = await fetch(API_BASE + path, options);
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      throw new Error(body.detail || `Request failed (${res.status})`);
+    }
+    return res.json();
+  }
+
+  function showError(message) {
+    const banner = el("error-banner");
+    banner.style.display = "block";
+    banner.innerHTML = `
+      <b>Can't reach the scanner API.</b><br>
+      ${message}<br><br>
+      Make sure it's running: <code>uvicorn api:app --host 0.0.0.0 --port 8000</code>
+      &nbsp;— and that <code>API_BASE</code> at the top of this page's script matches where it's hosted.
+    `;
+  }
+  function clearError() {
+    el("error-banner").style.display = "none";
+  }
+
+  function confClass(tier) {
+    return tier === "High" ? "conf-high" : tier === "Medium" ? "conf-medium" : "conf-low";
+  }
+
+  function ipTail(ip) {
+    const parts = ip.split(".");
+    return parts.length === 4 ? "." + parts[3] : ip;
+  }
+
+  // ---------- Stats chips ----------
+  async function loadStats() {
+    const stats = await fetchJSON("/stats");
+    el("stat-chips").innerHTML = `
+      <div class="chip good"><b>${stats.online_now}</b> online</div>
+      <div class="chip"><b>${stats.total_devices}</b> total</div>
+      <div class="chip warn"><b>${stats.pending_approval}</b> pending</div>
+      <div class="chip danger"><b>${stats.unknown_vendor}</b> unknown vendor</div>
+    `;
+    el("subtitle").textContent = `${stats.total_devices} devices known on this network · updated ${new Date().toLocaleTimeString()}`;
+  }
+
+  // ---------- Topology map (signature element) ----------
+  function renderTopology(devices) {
+    const svg = el("topology-svg");
+    const w = 800, h = 260, cx = w / 2, cy = h / 2, radius = 95;
+    const n = devices.length;
+
+    let nodes = "";
+    let lines = "";
+
+    devices.forEach((d, i) => {
+      const angle = (i / Math.max(n, 1)) * Math.PI * 2 - Math.PI / 2;
+      const x = cx + radius * Math.cos(angle);
+      const y = cy + radius * Math.sin(angle) * 0.85;
+
+      let color = "var(--muted)";
+      let dash = "";
+      if (!d.is_approved) { color = "var(--red)"; dash = 'stroke-dasharray="3,3"'; }
+      else if (d.status === "online") { color = "var(--teal)"; }
+
+      lines += `<line x1="${cx}" y1="${cy}" x2="${x}" y2="${y}" stroke="${color}" stroke-opacity="0.45" stroke-width="1.5" ${dash}></line>`;
+      nodes += `
+        <g class="topo-node" data-mac="${d.mac}">
+          <circle class="node-circle" cx="${x}" cy="${y}" r="7" fill="${color}"></circle>
+          <text class="node-label" x="${x}" y="${y + 20}" text-anchor="middle">${ipTail(d.ip)}</text>
+        </g>
+      `;
+    });
+
+    svg.innerHTML = `
+      ${lines}
+      <circle class="hub-circle" cx="${cx}" cy="${cy}" r="16"></circle>
+      <text class="hub-label" x="${cx}" y="${cy + 4}" text-anchor="middle">GW</text>
+      ${nodes}
+    `;
+
+    svg.querySelectorAll(".topo-node").forEach((node) => {
+      node.addEventListener("click", () => {
+        const mac = node.getAttribute("data-mac");
+        const row = document.querySelector(`tr[data-mac="${mac}"]`);
+        if (row) {
+          row.scrollIntoView({ behavior: "smooth", block: "center" });
+          row.classList.add("flash");
+          setTimeout(() => row.classList.remove("flash"), 900);
+        }
+      });
+    });
+  }
+
+  // ---------- Table ----------
+  function applyFilter(devices) {
+    if (currentFilter === "pending") return devices.filter(d => !d.is_approved);
+    if (currentFilter === "unknown") return devices.filter(d => d.vendor === "Unknown");
+    if (currentFilter === "online") return devices.filter(d => d.status === "online");
+    return devices;
+  }
+
+  function renderTable() {
+    const filtered = applyFilter(allDevices).sort((a, b) => {
+      const na = a.ip.split(".").map(Number), nb = b.ip.split(".").map(Number);
+      for (let i = 0; i < 4; i++) { if (na[i] !== nb[i]) return na[i] - nb[i]; }
+      return 0;
+    });
+
+    const tbody = el("device-tbody");
+    tbody.innerHTML = "";
+    el("empty-state").style.display = filtered.length === 0 ? "block" : "none";
+
+    filtered.forEach((d) => {
+      const flags = [];
+      if (!d.is_approved) flags.push('<span class="pill not-approved">NOT APPROVED</span>');
+      if (d.vendor === "Unknown") flags.push('<span class="pill unknown-vendor">UNKNOWN VENDOR</span>');
+
+      const row = document.createElement("tr");
+      row.dataset.mac = d.mac;
+      row.innerHTML = `
+        <td class="mono">${d.ip}</td>
+        <td><span class="hostname">${escapeHtml(d.hostname)}</span><span class="vendor">${escapeHtml(d.vendor)}</span></td>
+        <td>${escapeHtml(d.device_type)}</td>
+        <td><span class="dot ${confClass(d.confidence_tier)}"></span>${d.confidence_tier} (${d.confidence_score})</td>
+        <td><span class="dot ${d.status}"></span>${d.status}</td>
+        <td>${flags.join("") || "—"}</td>
+        <td><button class="approve-btn ${d.is_approved ? "approved" : "pending"}" data-mac="${d.mac}">
+          ${d.is_approved ? "Approved ✓" : "Approve"}
+        </button></td>
+      `;
+      row.addEventListener("click", (e) => {
+        if (e.target.closest(".approve-btn")) return;
+        expandedMac = expandedMac === d.mac ? null : d.mac;
+        renderTable();
+      });
+      tbody.appendChild(row);
+
+      row.querySelector(".approve-btn").addEventListener("click", async (e) => {
+        e.stopPropagation();
+        await toggleApproval(d);
+      });
+
+      if (expandedMac === d.mac) {
+        const detail = document.createElement("tr");
+        detail.className = "detail-row";
+        detail.innerHTML = `
+          <td colspan="7">
+            <div class="detail-grid">
+              <div><b>MAC:</b> ${d.mac}</div>
+              <div><b>Open ports:</b> ${d.open_ports.length ? d.open_ports.join(", ") : "none"}</div>
+              <div><b>Banner:</b> ${escapeHtml(d.banner || "—")}</div>
+              <div><b>mDNS services:</b> ${d.mdns_services.length ? d.mdns_services.join(", ") : "—"}</div>
+              <div><b>SSDP name:</b> ${escapeHtml(d.ssdp_friendly_name || "—")}</div>
+              <div><b>SSDP model:</b> ${escapeHtml(d.ssdp_model_name || "—")}</div>
+              <div><b>First seen:</b> ${formatTime(d.first_seen)}</div>
+              <div><b>Last seen:</b> ${formatTime(d.last_seen)}</div>
+            </div>
+          </td>
+        `;
+        tbody.appendChild(detail);
+      }
+    });
+  }
+
+  function formatTime(iso) {
+    try { return new Date(iso).toLocaleString(); } catch { return iso; }
+  }
+
+  function escapeHtml(str) {
+    const div = document.createElement("div");
+    div.textContent = str ?? "";
+    return div.innerHTML;
+  }
+
+  async function toggleApproval(device) {
+    try {
+      const updated = await fetchJSON(`/devices/${encodeURIComponent(device.mac)}/approve`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ is_approved: !device.is_approved }),
+      });
+      const idx = allDevices.findIndex(d => d.mac === device.mac);
+      allDevices[idx] = updated;
+      renderTable();
+      renderTopology(allDevices);
+      loadStats().catch(() => {});
+    } catch (err) {
+      showError(err.message);
+    }
+  }
+
+  // ---------- Main load ----------
+  async function loadAll() {
+    try {
+      const devices = await fetchJSON("/devices");
+      allDevices = devices;
+      clearError();
+      renderTopology(devices);
+      renderTable();
+      await loadStats();
+    } catch (err) {
+      showError(err.message);
+    }
+  }
+
+  el("filter-segmented").addEventListener("click", (e) => {
+    const btn = e.target.closest("button[data-filter]");
+    if (!btn) return;
+    currentFilter = btn.dataset.filter;
+    [...el("filter-segmented").children].forEach(b => b.classList.remove("active"));
+    btn.classList.add("active");
+    renderTable();
+  });
+
+  el("refresh-btn").addEventListener("click", loadAll);
+
+  loadAll();
+  setInterval(loadAll, ONLINE_REFRESH_MS);
+</script>
+</body>
+</html>
