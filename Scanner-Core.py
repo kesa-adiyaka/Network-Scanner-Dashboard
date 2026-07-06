@@ -7,10 +7,14 @@ import re
 import socket
 import urllib.request
 import time
+import sqlite3
+import json
+from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor
 from scapy.all import ARP, Ether, IP, TCP, DNS, DNSQR, srp, sr1
 
 OUI_DATABASE = {}
+DB_PATH = "netscan.db"
 
 # ----------------------------------------------------------------------
 # Passive TCP/IP stack fingerprint table (fallback signal only — see
@@ -530,6 +534,145 @@ def scan_arp_network(target_ip_range):
 
 
 # ----------------------------------------------------------------------
+# SQLite persistence
+#
+# Keyed on MAC address, not IP - IPs rotate under DHCP but the MAC is
+# stable, so this is what lets us actually answer "have I seen this
+# device before" across scans rather than just "is this IP alive".
+#
+# is_approved and first_seen are intentionally NEVER overwritten on an
+# update - a re-scan should never silently reset a device you already
+# vetted, and first_seen is a historical fact, not current state.
+# ----------------------------------------------------------------------
+
+def get_db_connection():
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def init_db(conn):
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS devices (
+            mac TEXT PRIMARY KEY,
+            ip TEXT,
+            hostname TEXT,
+            vendor TEXT,
+            device_type TEXT,
+            confidence_score INTEGER,
+            confidence_tier TEXT,
+            open_ports TEXT,
+            banner TEXT,
+            mdns_services TEXT,
+            ssdp_friendly_name TEXT,
+            ssdp_model_name TEXT,
+            raw_ttl INTEGER,
+            raw_window INTEGER,
+            is_approved INTEGER NOT NULL DEFAULT 0,
+            first_seen TEXT NOT NULL,
+            last_seen TEXT NOT NULL
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS scan_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            mac TEXT NOT NULL,
+            ip TEXT NOT NULL,
+            scan_timestamp TEXT NOT NULL
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_scan_log_mac ON scan_log(mac)")
+    conn.commit()
+
+
+def reset_db():
+    """Deletes the existing DB file so the next init_db starts fresh."""
+    if os.path.exists(DB_PATH):
+        os.remove(DB_PATH)
+
+
+def upsert_device(conn, device_info, timestamp):
+    """
+    Inserts a brand-new device or updates an existing one by MAC.
+    Returns True if this MAC has never been seen before (i.e. brand new
+    to the network), False if it's a known device being refreshed.
+    """
+    mac = device_info["mac"]
+    existing = conn.execute("SELECT mac FROM devices WHERE mac = ?", (mac,)).fetchone()
+    is_new = existing is None
+
+    ssdp = device_info.get("ssdp", {})
+
+    if is_new:
+        conn.execute("""
+            INSERT INTO devices (
+                mac, ip, hostname, vendor, device_type, confidence_score,
+                confidence_tier, open_ports, banner, mdns_services,
+                ssdp_friendly_name, ssdp_model_name, raw_ttl, raw_window,
+                is_approved, first_seen, last_seen
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+        """, (
+            mac, device_info["ip"], device_info["hostname"], device_info["vendor"],
+            device_info["device_type"], device_info["confidence_score"],
+            device_info["confidence_tier"], json.dumps(device_info["open_ports"]),
+            device_info.get("banner"), json.dumps(device_info.get("mdns_services", [])),
+            ssdp.get("friendly_name"), ssdp.get("model_name"),
+            device_info.get("raw_ttl"), device_info.get("raw_window"),
+            timestamp, timestamp,
+        ))
+    else:
+        conn.execute("""
+            UPDATE devices SET
+                ip = ?, hostname = ?, vendor = ?, device_type = ?,
+                confidence_score = ?, confidence_tier = ?, open_ports = ?,
+                banner = ?, mdns_services = ?, ssdp_friendly_name = ?,
+                ssdp_model_name = ?, raw_ttl = ?, raw_window = ?, last_seen = ?
+            WHERE mac = ?
+        """, (
+            device_info["ip"], device_info["hostname"], device_info["vendor"],
+            device_info["device_type"], device_info["confidence_score"],
+            device_info["confidence_tier"], json.dumps(device_info["open_ports"]),
+            device_info.get("banner"), json.dumps(device_info.get("mdns_services", [])),
+            ssdp.get("friendly_name"), ssdp.get("model_name"),
+            device_info.get("raw_ttl"), device_info.get("raw_window"),
+            timestamp, mac,
+        ))
+
+    conn.execute(
+        "INSERT INTO scan_log (mac, ip, scan_timestamp) VALUES (?, ?, ?)",
+        (mac, device_info["ip"], timestamp)
+    )
+
+    return is_new
+
+
+def persist_devices(devices):
+    """
+    Writes every enriched device from this scan into SQLite. Returns
+    device_info dicts annotated with is_new/is_approved pulled straight
+    from the DB, so the CLI report reflects persisted state, not just
+    this scan's in-memory guesses.
+    """
+    conn = get_db_connection()
+    init_db(conn)
+    timestamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+    for device in devices:
+        is_new = upsert_device(conn, device, timestamp)
+        device["is_new"] = is_new
+        row = conn.execute(
+            "SELECT is_approved, first_seen FROM devices WHERE mac = ?",
+            (device["mac"],)
+        ).fetchone()
+        device["is_approved"] = bool(row["is_approved"])
+        device["first_seen"] = row["first_seen"]
+
+    conn.commit()
+    conn.close()
+    return devices
+
+
+# ----------------------------------------------------------------------
 # CLI report rendering
 # ----------------------------------------------------------------------
 BOX_WIDTH = 92
@@ -550,8 +693,12 @@ def print_report(devices, target_range, elapsed_seconds):
     print(f"Hosts Alive  : {len(devices)}")
     unknown_count = sum(1 for d in devices if not d["is_known_vendor"])
     low_conf_count = sum(1 for d in devices if d["confidence_tier"] == "Low")
+    new_count = sum(1 for d in devices if d.get("is_new"))
+    unapproved_count = sum(1 for d in devices if not d.get("is_approved", False))
     print(f"Unknown Vendor Devices : {unknown_count}")
     print(f"Low Confidence IDs     : {low_conf_count}")
+    print(f"New Devices This Scan  : {new_count}")
+    print(f"Pending Approval       : {unapproved_count}")
     print(line)
 
     header = _row([
@@ -566,7 +713,14 @@ def print_report(devices, target_range, elapsed_seconds):
     for dev in sorted_devices:
         ports_str = str(dev["open_ports"]) if dev["open_ports"] else "[]"
         conf_str = f"{dev['confidence_tier']} ({dev['confidence_score']})"
-        flag = "  *** UNKNOWN VENDOR ***" if not dev["is_known_vendor"] else ""
+        flags = []
+        if dev.get("is_new"):
+            flags.append("*** NEW DEVICE ***")
+        if not dev["is_known_vendor"]:
+            flags.append("*** UNKNOWN VENDOR ***")
+        if not dev.get("is_approved", False):
+            flags.append("[PENDING APPROVAL]")
+        flag = ("  " + " ".join(flags)) if flags else ""
         print(_row([
             (dev["ip"], 15),
             (dev["hostname"][:18], 20),
@@ -594,14 +748,21 @@ def print_report(devices, target_range, elapsed_seconds):
 
 
 def main():
+    args = [a for a in sys.argv[1:] if a != "--reset-db"]
+    if "--reset-db" in sys.argv[1:]:
+        reset_db()
+        print("[*] Existing database wiped. Starting fresh.\n")
+
     load_oui_database()
-    target_network = sys.argv[1] if len(sys.argv) > 1 else get_local_cidr()
+    target_network = args[0] if args else get_local_cidr()
 
     start = time.time()
     discovered_devices = scan_arp_network(target_network)
+    discovered_devices = persist_devices(discovered_devices)
     elapsed = time.time() - start
 
     print_report(discovered_devices, target_network, elapsed)
+    print(f"\n[*] Results saved to {os.path.abspath(DB_PATH)}")
 
 
 if __name__ == "__main__":
